@@ -3,7 +3,7 @@
   "name": "confluency",
   "version": "0.4.3",
   "dependencies": {
-    "bluebird": "^3.1.1",
+    "bluebird": "^3.4.4",
     "lodash": "^4.0.1",
     "superagent": "^2.1.0",
     "superagent-bluebird-promise": "^3.0.0"

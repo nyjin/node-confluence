@@ -17,7 +17,7 @@
     "isparta": "^4.0.0",
     "mocha": "",
     "should": "^11.0.0",
-    "supertest": ""
+    "supertest": "2.0.1"
   },
   "optionalDependencies": {},
   "repository": {

@@ -1,10 +1,8 @@
-import * as Bluebird from 'bluebird';
-import * as superagent from 'superagent';
+import * as request from "request-promise-native";
 import * as url from 'url';
 
 type ContentType = 'page' | 'blogpost' | 'comment' | 'attachment';
 type RepresentationType = 'view' | 'export_view' | 'styled_view' | 'storage' | 'editor2' | 'anonymous_export_view';
-type AuthType = 'cookie' | 'basic' | 'no';
 type StatusType = 'current' | 'trashed' | 'historical' | 'draft';
 
 interface ContentBodyCreate {
@@ -60,28 +58,36 @@ export interface Content {
 }
 
 export default class Confluency {
+
   private host: string;
   private context: string;
-  private username?: string;
-  private password?: string;
-  private authType?: 'cookie' | 'basic' | 'no';
-  private client: superagent.SuperAgent<superagent.SuperAgentRequest>;
-  private cookieAuth: Bluebird<void>;
+  private baseOptions: any;
 
-  constructor(opts: {host: string, context?: string, username?: string, password?: string, authType?: AuthType}) {
+  // tslint:disable-next-line:cyclomatic-complexity
+  constructor(opts: { host: string, context?: string
+      oauth?: {
+        consumerKey: string;
+        privateKey: string;
+        token: string;
+        tokenSecret: string;
+        verifier?: any;
+        callbackUrl?: any;
+      }, request?: request}) {
     this.host = opts.host;
     opts.context = opts.context || '';
     if (opts.context.length && opts.context[0] !== '/') opts.context = '/' + opts.context;
     this.context = opts.context;
-    this.username = opts.username;
-    this.password = opts.password;
-    this.authType = opts.authType || opts.username && 'basic' || 'no';
-    if (this.authType === 'basic' && !(opts.username && opts.password)) {
-      throw new Error('BasicAuth needs both of username and password');
+    // This is so we can fake during unit tests
+    // this.request = opts.request || request;
+    if (opts.oauth && opts.oauth.consumerKey && opts.oauth.token) {
+      this.baseOptions = { oauth: {
+        consumer_key: opts.oauth.consumerKey,
+        consumer_secret: opts.oauth.privateKey,
+        token: opts.oauth.token,
+        token_secret: opts.oauth.tokenSecret,
+        signature_method: 'RSA-SHA1'
+      }};
     }
-
-    this.client = superagent.agent();
-    this.cookieAuth = this.makeCookieAuthPromise();
   }
 
   compositeUri({prefix, uri}) {
@@ -91,41 +97,80 @@ export default class Confluency {
     return this.host + this.context + prefix + uri;
   }
 
-  newRequest(method: string, uri: string, noRestApi?: boolean) {
-    const prefix = !noRestApi && '/rest/api' || '';
-    const request: superagent.Request = this.client[method](this.compositeUri({prefix, uri}));
-    if (this.authType === 'basic') {
-      this.auth(request);
+  /**
+   * @name makeRequestHeader
+   * @function
+   * Creates a requestOptions object based on the default template for one
+   * @param {string} uri
+   * @param {object} [options] - an object containing fields and formatting how the
+   */
+  makeRequestHeader(uri, options: any) {
+    return {
+      rejectUnauthorized: true,
+      method: options.method || 'GET',
+      uri,
+      json: true,
+      ...options
+    };
+  }
+
+  /**
+   * @name doRequest
+   * @function
+   * Does a request based on the requestOptions object
+   * @param {object} requestOptions - fields on this object get posted as a request header for
+   * requests to jira
+   */
+  async doRequest(requestOptions) {
+    const options = {
+      ...this.baseOptions,
+      ...requestOptions
+    };
+
+    const response = await request(options);
+    if (response) {
+      if (Array.isArray(response.errorMessages) && response.errorMessages.length > 0) {
+        throw new Error(response.errorMessages.join(', '));
+      }
     }
-    return request;
+
+    return response;
+  }
+  newRequest(m: string, uri: string, b?: string) {
+    // const prefix = !noRestApi && '/rest/api' || '';
+    // const request: superagent.Request = this.client[method](this.compositeUri({prefix, uri}));
+
+    const prefix = '/rest/api';
+    const u = this.compositeUri({ prefix, uri});
+    console.log(u);
+    return this.doRequest(this.makeRequestHeader(u, {
+      method: m,
+      body: b,
+      'Content-Type': 'application/json' }));
   }
 
   async GET(uri: string) {
-    await this.cookieAuth;
-    const data = await this.newRequest('get', uri);
-    return data.body;
+    const data = await this.newRequest('GET', uri);
+    return data;
   }
 
   async POST(uri: string, body) {
-    await this.cookieAuth;
-    const data = await this.newRequest('post', uri).set('Content-Type', 'application/json').send(body);
-    return data.body;
+    const data = await this.newRequest('POST', uri, body);
+    return data;
   }
 
   async PUT(uri: string, body) {
-    await this.cookieAuth;
     try {
-      const data = await this.newRequest('put', uri).set('Content-Type', 'application/json').send(body);
-      return data.body;
+      const data = await this.newRequest('PUT', uri, body);
+      return data;
     } catch (e) {
       console.error(e);
     }
   }
 
   async DEL(uri: string) {
-    await this.cookieAuth;
-    const data = await this.newRequest('del', uri);
-    return data.body;
+    const data = await this.newRequest('DEL', uri);
+    return data;
   }
 
   createQueryString(parameters) {
@@ -296,25 +341,5 @@ export default class Confluency {
       representation: 'wiki'
     });
     return body.value;
-  }
-
-  private auth(request: superagent.Request) {
-    const tok = this.username + ':' + this.password;
-    const hash =  new Buffer(tok, 'binary').toString('base64');
-    request.set('Authorization', 'Basic ' + hash);
-    return request;
-  }
-
-  private makeCookieAuthPromise() {
-    if (this.authType !== 'cookie') return Bluebird.resolve();
-    return Bluebird.resolve().then(() => {
-      return this.client.post(this.compositeUri({prefix: '', uri: '/login.action'}))
-        .type('form')
-        .send({ os_username: this.username, os_password: this.password })
-        .then(o => o.body)
-        .catch(e => {
-          throw new Error('CookieAuth has failed');
-        });
-    });
   }
 }
